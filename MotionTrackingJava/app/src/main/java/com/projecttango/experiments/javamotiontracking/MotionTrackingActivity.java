@@ -76,6 +76,18 @@ import java.util.Iterator;
 import java.util.Random;
 
 import android.os.Handler;
+import com.microchip.android.mcp2221comm.Mcp2221Config;
+
+import com.microchip.android.mcp2221comm.Mcp2221Comm;
+import com.microchip.android.mcp2221comm.Mcp2221Constants;
+import com.microchip.android.microchipusb.Constants;
+import com.microchip.android.microchipusb.MCP2221;
+import com.microchip.android.microchipusb.MicrochipUsb;
+
+import android.widget.Toast;
+import android.view.Gravity;
+
+
 /**
  * Main Activity class for the Motion Tracking API Sample. Handles the connection to the Tango
  * service and propagation of Tango pose data to OpenGL and Layout views. OpenGL rendering logic is
@@ -127,7 +139,6 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     UsbEndpoint epInCamera;
     UsbEndpoint epOutCamera;
     UsbDeviceConnection devConnectionCamera;
-    private static final String ACTION_USB_PERMISSION = "com.mobilemerit.usbhost.USB_PERMISSION";
     PendingIntent mPermissionIntent;
     PendingIntent mPermissionIntentCamera;
 
@@ -136,7 +147,20 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     SimpleXYSeries series1 = null;
     private XYPlot plot;
 
-
+    /** Microchip Product ID. */
+    protected static final int MCP2221_PID = 0xDD;
+    /** Microchip Vendor ID. */
+    protected static final int MCP2221_VID = 0x4D8;
+    /** TAG to be used for logcat. */
+   // protected static final String TAG = "MainActivity";
+    /** Custom toast - displayed in the center of the screen. */
+    private static Toast sToast;
+    /** USB permission action for the USB broadcast receiver. */
+    private static final String ACTION_USB_PERMISSION = "com.microchip.android.USB_PERMISSION";
+    /** public member to be used in the test project. */
+    public MCP2221 mcp2221;
+    /** public member to be used in the test project. */
+    public Mcp2221Comm mcp2221Comm;
 
     final byte[] getSpec = {
             (byte) 0xC1, (byte) 0xC0, //start bytes
@@ -160,6 +184,8 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     private DataOutputStream tangoDepthOutput;
     private DataOutputStream tangoCamOutput;
     private DataOutputStream tangoSpectroOutput;
+
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -210,7 +236,63 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         setupSpectrometer();
 
 
-        setupCameraCapture();
+        //setupCameraCapture();
+        sToast = Toast.makeText(this, "", Toast.LENGTH_SHORT);
+        sToast.setGravity(Gravity.CENTER, 0, 0);
+
+        mPermissionIntent =
+                PendingIntent.getBroadcast(this, 0, new Intent(ACTION_USB_PERMISSION), 0);
+
+        final IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+
+        registerReceiver(mUsbReceiver, filter);
+
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        registerReceiver(mUsbReceiver, filter);
+
+        Constants result = null;
+
+        mcp2221 = new MCP2221(this);
+        result = MicrochipUsb.getConnectedDevice(this);
+
+        if (result == Constants.MCP2221) {
+            // try to open a connection
+            result = mcp2221.open();
+
+            switch (result) {
+                case SUCCESS:
+                    sToast.setText("MCP2221 connected");
+                    sToast.show();
+                    mcp2221Comm = new Mcp2221Comm(mcp2221);
+                    setupMCP2221();
+                    break;
+                case CONNECTION_FAILED:
+                    sToast.setText("Connection failed");
+                    sToast.show();
+                    break;
+                case NO_USB_PERMISSION:
+                    mcp2221.requestUsbPermission(mPermissionIntent);
+                    break;
+                default:
+                    break;
+            }
+        }
+        final Handler camHandler = new Handler();
+        final byte b0 = 0;
+        final byte b1 = 1;
+        final int camDelay = 350; //milliseconds
+        camHandler.postDelayed(new Runnable() {
+            public void run() {
+                Log.d("USB", "Picture taken");
+                mcp2221Comm.setGpPinValue(b1, b0); // make sure focus is connected to ground
+                mcp2221Comm.setGpPinValue(b0, b0); // trigger the shutter
+                //startCapture();
+                android.os.SystemClock.sleep(50); // wait a bit
+                mcp2221Comm.setGpPinValue(b0,b1); // bring the shutter back high
+                camHandler.postDelayed(this, camDelay);
+            }
+        }, camDelay);
 
 
 
@@ -312,93 +394,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         }
 
     }
-    private void setupCameraCapture() {
-        managerCamera = (UsbManager) getSystemService(Context.USB_SERVICE);
-		/*
-		 * this block required if you need to communicate to USB devices it's
-		 * take permission to device
-		 * if you want than you can set this to which device you want to communicate
-		 */
-        // ------------------------------------------------------------------
-        mPermissionIntentCamera = PendingIntent.getBroadcast(this, 0, new Intent(
-                ACTION_USB_PERMISSION), 0);
-        IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
-        registerReceiver(mUsbReceiver, filter);
-        // -------------------------------------------------------------------
-        HashMap<String, UsbDevice> deviceList = managerCamera.getDeviceList();
-        Iterator<UsbDevice> deviceIterator = deviceList.values().iterator();
-        while (deviceIterator.hasNext()) {
-            deviceCamera = deviceIterator.next();
-            managerCamera.requestPermission(deviceCamera, mPermissionIntentCamera);
-            if ((deviceCamera.getProductId() == 221) && (deviceCamera.getVendorId()==1240)) {
-                Log.d("Device", "found 2221");
-                // Based on Microchip's MCP2221.java
-                for (int j = 0; j < deviceCamera.getInterfaceCount(); j++){
-                    if (deviceCamera.getInterface(j).getInterfaceClass() == UsbConstants.USB_CLASS_HID){
-                        Log.d("Device","got interface");
-                        devInterfaceCamera = deviceCamera.getInterface(j);
-                        for (int k = 0; k < devInterfaceCamera.getEndpointCount(); k++) {
-                            if (devInterfaceCamera.getEndpoint(k).getDirection() == UsbConstants.USB_DIR_OUT) {
-                                Log.d("Device","got out endpoint");
-                                epOutCamera = devInterfaceCamera.getEndpoint(k);
-                            } else {
-                                epInCamera = devInterfaceCamera.getEndpoint(k);
-                            }
-                        }
 
-                    }
-                }
-
-                if (managerCamera.hasPermission(deviceCamera)) {
-                    devConnectionCamera = manager.openDevice(deviceCamera);
-
-                    // set GP0 to GPIO
-//                    byte[] setGPIO = {
-//                            (byte) 0xB1, // write flash data
-//                            0x01, // write GP settings
-//                            (byte) 0x00, // GP0 power up settings (output, initial value 1)
-//                            (byte) 0x00, // GP1 power up settings (output, initial value 0)
-//                            (byte) 0x00, // GP2 power up settings (ignore)
-//                            (byte) 0x00, // GP3 power up settings (ignore)
-//                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 6-15 we don't care
-//                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 16-25 we don't care
-//                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 26-35 we don't care
-//                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 36-45 we don't care
-//                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 46-55 we don't care
-//                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00// 8 bytes- Bytes 56-63 we don't care
-//                    };
-//                    Log.d("bytes transfered: "," " + devConnectionCamera.bulkTransfer(epOutCamera, setGPIO, 64, 1000));
-//                    byte[] resp = new byte[64];
-//                    devConnectionCamera.bulkTransfer(epInCamera, resp, 64, 1000);
-//                    Log.d("camera setup", "should be 0 " + resp[1]);
-
-                    // read the GP values
-                    byte[] readGP = new byte[64];
-                    readGP[0] = (byte) 0xB0;
-                    readGP[1] = 0x01;
-                    byte []resp = new byte[64];
-                    Log.d("bytes transfered: "," " + devConnectionCamera.bulkTransfer(epOutCamera, readGP, 64, 1000));
-                    devConnectionCamera.bulkTransfer(epInCamera, resp, 64, 1000);
-                    Log.d("camera setup", "GP0 power up " + resp[4] +" GP1 power up " + resp[5] +" GP2 power up " + resp[6] +" GP3 power up " + resp[7]  );
-
-
-//                    final Handler camHandler = new Handler();
-//                    final int camDelay = 350; //milliseconds
-//                    camHandler.postDelayed(new Runnable() {
-//                        public void run() {
-//                            startCapture();
-//                            android.os.SystemClock.sleep(50);
-//                            endCapture();
-//                            camHandler.postDelayed(this, camDelay);
-//                        }
-//                    }, camDelay);
-
-                    break;
-                }
-            }
-        }
-
-    }
     private void captureSpectrum(boolean updateUI){
         devConnection.bulkTransfer(epOut, getSpec, 64, 1000);
         byte[] spec = new byte[2112];
@@ -520,25 +516,110 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     }
 
     private final BroadcastReceiver mUsbReceiver = new BroadcastReceiver() {
-
-        public void onReceive(Context context, Intent intent) {
-            String action = intent.getAction();
+        @Override
+        public void onReceive(final Context context, final Intent intent) {
+            final String action = intent.getAction();
+            Log.d("USB", "onReceive");
             if (ACTION_USB_PERMISSION.equals(action)) {
                 synchronized (this) {
-                    UsbDevice device = (UsbDevice) intent
-                            .getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                    if (intent.getBooleanExtra(
-                            UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                    final UsbDevice device =
+                            (UsbDevice) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+
+                    // is usb permission has been granted, try to open a connection
+                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         if (device != null) {
                             // call method to set up device communication
+                            final Constants result = mcp2221.open();
+
+                            if (result != Constants.SUCCESS) {
+                                sToast.setText("Could not open MCP2221 connection");
+                                sToast.show();
+                            } else {
+                                mcp2221Comm = new Mcp2221Comm(mcp2221);
+                                sToast.setText("MCP2221 connection opened");
+                                sToast.show();
+                                setupMCP2221();
+
+                            }
                         }
                     } else {
-                        Log.d("ERROR", "permission denied for device " + device);
+                        sToast.setText("USB Permission Denied");
+                        sToast.show();
                     }
                 }
             }
+
+            if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+                sToast.setText("Device Detached");
+                sToast.show();
+                // close the connection and
+                // release all resources
+                mcp2221.close();
+                // leave a bit of time for the COM thread to close
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException e) {
+                    // TODO Auto-generated catch block
+                    // e.printStackTrace();
+                }
+                mcp2221Comm = null;
+            }
+
+            if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
+                sToast.setText("Device Attached");
+                sToast.show();
+                final UsbDevice device =
+                        (UsbDevice) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (device != null) {
+
+                    // only try to connect if an MCP2221 is attached
+                    if (device.getVendorId() == MCP2221_VID && device.getProductId() == MCP2221_PID) {
+                        final Constants result = mcp2221.open();
+
+                        switch (result) {
+                            case SUCCESS:
+                                sToast.setText("MCP2221 Connection Opened");
+                                sToast.show();
+                                Log.d("USB", "Connection opened");
+                                mcp2221Comm = new Mcp2221Comm(mcp2221);
+                                setupMCP2221();
+
+                                // if the nav drawer isn't open change the menu icon to show the MCP
+                                // is connected
+
+                                break;
+                            case CONNECTION_FAILED:
+                                sToast.setText("Connection Failed");
+                                sToast.show();
+                                Log.d("USB", "Connection failed");
+
+                                break;
+                            case NO_USB_PERMISSION:
+                                Log.d("USB", "no permission");
+
+                                mcp2221.requestUsbPermission(mPermissionIntent);
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                }
+            }
+
         }
     };
+    void setupMCP2221(){
+        Mcp2221Config conf = new Mcp2221Config();
+        byte[] pinDesDir = {0,0,0,0};
+        conf.setGpPinDesignations(pinDesDir);
+        conf.setGpPinDirections(pinDesDir);
+        byte[] pinVals = {1,0,0,0};
+        conf.setGpPinValues(pinVals);
+        mcp2221Comm.setSRamSettings(conf, false, false, false, false, false, false, true);
+        Log.d("MCP2221", "values set");
+
+
+    }
     /**
      * Sets Rajawalisurface view and its renderer. This is ideally called only once in onCreate.
      */
@@ -773,6 +854,10 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // close the connection and release all resources
+        if(mUsbReceiver != null) {
+            unregisterReceiver(mUsbReceiver);
+        }
     }
 
     @Override
