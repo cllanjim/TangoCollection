@@ -205,7 +205,16 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         series1.useImplicitXVals();
         plot.addSeries(series1, new LineAndPointFormatter(Color.BLUE, Color.RED, Color.BLACK, null));
 
-        File root = new File(Environment.getExternalStorageDirectory()+File.separator+"CraigData");
+        File root = new File(Environment.getExternalStorageDirectory()+File.separator+"CraigData"+System.currentTimeMillis());
+        try{
+            if(root.mkdir()) {
+                System.out.println("Directory created");
+            } else {
+                System.out.println("Directory is not created");
+            }
+        }catch(Exception e){
+            e.printStackTrace();
+        }
         File poutput = new File(root, "pose.dat");
         File doutput = new File(root, "depth.dat");
         File coutput = new File(root, "cam.dat");
@@ -255,7 +264,6 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
 
         mcp2221 = new MCP2221(this);
         result = MicrochipUsb.getConnectedDevice(this);
-
         if (result == Constants.MCP2221) {
             // try to open a connection
             result = mcp2221.open();
@@ -278,18 +286,25 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
                     break;
             }
         }
+
         final Handler camHandler = new Handler();
         final byte b0 = 0;
         final byte b1 = 1;
         final int camDelay = 350; //milliseconds
         camHandler.postDelayed(new Runnable() {
             public void run() {
-                Log.d("USB", "Picture taken");
                 mcp2221Comm.setGpPinValue(b1, b0); // make sure focus is connected to ground
                 mcp2221Comm.setGpPinValue(b0, b0); // trigger the shutter
                 //startCapture();
+                try {
+                    tangoCamOutput.writeLong(System.currentTimeMillis());
+                    Log.d("cam", "photo taken");
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
                 android.os.SystemClock.sleep(50); // wait a bit
                 mcp2221Comm.setGpPinValue(b0,b1); // bring the shutter back high
+
                 camHandler.postDelayed(this, camDelay);
             }
         }, camDelay);
@@ -321,6 +336,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
             Log.d("Device", " " + device.getDeviceId());
             if (device.getProductId() == 0x4200) {
                 devInterface = device.getInterface(0);
+                Log.d("INTERFACE CLASS", "class: " + devInterface.getInterfaceClass());
                 // https://github.com/uvwxy/android-ambit/blob/57bf1f4642b01680b26c6c807283f93dd8386130/src/de/uvwxy/android/ambit/lib/AndroidAmbitDevice.java
 
                 UsbEndpoint ep0 = devInterface.getEndpoint(0);
