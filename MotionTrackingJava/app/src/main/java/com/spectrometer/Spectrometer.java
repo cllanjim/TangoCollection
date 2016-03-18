@@ -7,6 +7,8 @@ package com.spectrometer;
 import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -15,18 +17,24 @@ import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.hardware.usb.UsbRequest;
 import android.os.Handler;
+import android.util.Log;
 
+import com.androidplot.xy.SimpleXYSeries;
 import com.microchip.android.microchipusb.Constants; // should really find a way to replace this
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Random;
 
 
 public class Spectrometer {
     /** Spectrometer Product ID. */
     private static final int SPEC_PID = 0x4200;
     /** Spectrometer Vendor ID. */
-    private static final int SPEC_VID = 0x2457;
+    public static final int SPEC_VID = 0x2457;
     /** USB HID packet size for the MCP2221. */
     private static final int HID_PACKET_SIZE = 64;
 
@@ -47,6 +55,60 @@ public class Spectrometer {
     /** UsbManager used to scan for connected Spectrometer devices and grant USB permission. */
     private final UsbManager mUsbManager;
 
+
+    public final byte[] specSetIntegrationTimeCommand = {
+            // Set integration time (10,000 uSec = 10ms)
+            (byte) 0xC1, (byte) 0xC0, //start bytes
+            0x00, 0x10, // protocol version
+            0x00, 0x00, // flags
+            0x00, 0x00, // error number
+            0x10, 0x00, 0x11, 0x00, // message type
+            0x00, 0x00, 0x00, 0x00, // regarding (user-specified)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
+            0x00, // checksum type
+            0x04, // immediate length
+            0x10, 0x27, 0x00, 0x00, // integration time (immediate data)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unused (remainder of immediate data)
+            0x14, 0x00, 0x00, 0x00 ,// bytes remaining
+            // optional payload
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // checksum
+            (byte) 0xC5, (byte) 0xC4,(byte)  0xC3,(byte)  0xC2 // footer
+    };
+    public final byte[] specSetBinFactorCommand = {
+            (byte) 0xC1, (byte) 0xC0, //start bytes
+            0x00, 0x10, // protocol version
+            0x00, 0x00, // flags
+            0x00, 0x00, // error number
+            (byte) 0x90, 0x02, 0x11, 0x00, // message type
+            0x00, 0x00, 0x00, 0x00, // regarding (user-specified)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
+            0x00, // checksum type
+            0x01, // immediate length
+            0x00, 0x00, 0x00, 0x00, // binning mode (0) was too lazy to move the next three bytes to next line (immediate data)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unused (remainder of immediate data)
+            0x14, 0x00, 0x00, 0x00 ,// bytes remaining
+            // optional payload
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // checksum
+            (byte) 0xC5, (byte) 0xC4,(byte)  0xC3,(byte)  0xC2 // footer
+    };
+    final byte[] specGetSpectrum = {
+            (byte) 0xC1, (byte) 0xC0, //start bytes
+            0x00, 0x10, // protocol version
+            0x00, 0x00, // flags
+            0x00, 0x00, // error number
+            0x00, 0x10, 0x10, 0x00, // message type
+            0x00, 0x00, 0x00, 0x00, // regarding (user-specified)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
+            0x00, // checksum type
+            0x00, // immediate length
+            0x00, 0x00, 0x00, 0x00, // unused (immediate data)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unused (remainder of immediate data)
+            0x14, 0x00, 0x00, 0x00,// bytes remaining
+            // optional payload
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // checksum
+            (byte) 0xC5, (byte) 0xC4, (byte) 0xC3, (byte) 0xC2 // footer
+    };
+    final ByteBuffer getSpec = ByteBuffer.wrap(specGetSpectrum);
     protected static final String TAG = "Spectrometer";
 
     /**
@@ -97,20 +159,35 @@ public class Spectrometer {
                 // Now go through the interfaces until we find the vendor specified one, should be the 0th
                 for (int i = 0; i < mSpecDevice.getInterfaceCount(); i++) {
                     tempInterface = mSpecDevice.getInterface(i);
-                    if (tempInterface.getInterfaceClass() == UsbConstants.USB_CLASS_VENDOR_SPEC) {
-                        // we found the interface
-                        mSpecInterface = tempInterface;
-                        for (int j = 0; j < mSpecInterface.getEndpointCount(); j++) {
-                            if (mSpecInterface.getEndpoint(j).getDirection() == UsbConstants.USB_DIR_OUT) {
-                                // found the OUT USB endpoint
-                                mSpecEpOut = mSpecInterface.getEndpoint(j);
-                            } else {
-                                // found the IN USB endpoint
-                                mSpecEpIn = mSpecInterface.getEndpoint(j);
-                            }
-                        }
-                        break;
+
+                    UsbEndpoint ep0 = tempInterface.getEndpoint(0);
+                    UsbEndpoint ep1 = tempInterface.getEndpoint(1);
+                    if (ep0.getDirection() == UsbConstants.USB_DIR_IN) {
+                        mSpecEpIn = ep0;
+                        mSpecEpOut = ep1;
+
+                    } else {
+                        mSpecEpIn = ep1;
+                        mSpecEpOut = ep0;
+
                     }
+                    break;
+                    // why doesn't this work?  ¯\_(ツ)_/¯
+
+//                    if (tempInterface.getInterfaceClass() == UsbConstants.USB_CLASS_VENDOR_SPEC) {
+//                        // we found the interface
+//                        mSpecInterface = tempInterface;
+//                        for (int j = 0; j < mSpecInterface.getEndpointCount(); j++) {
+//                            if (mSpecInterface.getEndpoint(j).getDirection() == UsbConstants.USB_DIR_OUT) {
+//                                // found the OUT USB endpoint
+//                                mSpecEpOut = mSpecInterface.getEndpoint(j);
+//                            } else {
+//                                // found the IN USB endpoint
+//                                mSpecEpIn = mSpecInterface.getEndpoint(j);
+//                            }
+//                        }
+//                        break;
+//                    }
                 }
                 // if the user granted USB permission
                 // try to open a connection
@@ -125,7 +202,10 @@ public class Spectrometer {
         if (mSpecConnection == null) {
             return Constants.CONNECTION_FAILED;
         } else {
-            return Constants.SUCCESS;
+            if (setupSpectrometer()){
+                return Constants.SUCCESS;
+            }
+            return Constants.CONNECTION_FAILED;
         }
     }
 
@@ -150,29 +230,23 @@ public class Spectrometer {
      *         null - if the transaction wasn't successful
      *
      */
-    public final ByteBuffer sendData(final ByteBuffer data) {
+    public final ByteBuffer sendData(final ByteBuffer usbCommand, int outSize, int inSize) {
 
-        if (data.capacity() > HID_PACKET_SIZE) {
-            // USB packet size is 64 bytes
-            return null;
-        }
 
-        ByteBuffer usbCommand = ByteBuffer.allocate(HID_PACKET_SIZE);
-        usbCommand = data;
 
         mSpecUsbOutRequest.initialize(mSpecConnection, mSpecEpOut);
         mSpecUsbInRequest.initialize(mSpecConnection, mSpecEpIn);
         mSpecConnection.claimInterface(mSpecInterface, true);
 
         // queue the USB command
-        mSpecUsbOutRequest.queue(usbCommand, HID_PACKET_SIZE);
+        mSpecUsbOutRequest.queue(usbCommand, outSize);
         if (mSpecConnection.requestWait() == null) {
             // an error has occurred
             return null;
         }
 
-        ByteBuffer usbResponse = ByteBuffer.allocate(HID_PACKET_SIZE);
-        mSpecUsbInRequest.queue(usbResponse, HID_PACKET_SIZE);
+        ByteBuffer usbResponse = ByteBuffer.allocate(inSize);
+        mSpecUsbInRequest.queue(usbResponse, inSize);
         if (mSpecConnection.requestWait() == null) {
             // an error has occurred
             return null;
@@ -181,6 +255,23 @@ public class Spectrometer {
 
     }
 
+    public byte[] captureSpectrum(){
+        byte[] spec = new byte[2112];
+        if (mSpecConnection != null) {
+            int out = mSpecConnection.bulkTransfer(mSpecEpOut, specGetSpectrum, 64, 1000);
+            int in = mSpecConnection.bulkTransfer(mSpecEpIn, spec, 2112, 1000);
 
+            Log.d("spectro", "Out: " + out + "In: " + in);
+        }
+        return spec;
+    }
 
+    private boolean setupSpectrometer() {
+        if (mSpecConnection != null) {
+            mSpecConnection.bulkTransfer(mSpecEpOut, specSetIntegrationTimeCommand, 64, 1000);
+            mSpecConnection.bulkTransfer(mSpecEpOut, specSetBinFactorCommand, 64, 1000);
+            return true;
+        }
+        return false;
+    }
 }

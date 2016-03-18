@@ -52,7 +52,7 @@ public class MCP2221 implements Runnable {
     /** Microchip Product ID. */
     private static final int MCP2221_PID = 0xDD;
     /** Microchip Vendor ID. */
-    private static final int MCP2221_VID = 0x4D8;
+    public static final int MCP2221_VID = 0x4D8;
     /** USB HID packet size for the MCP2221. */
     private static final int HID_PACKET_SIZE = 64;
     /** USB CDC packet size for the MCP2221. */

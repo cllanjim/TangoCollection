@@ -87,7 +87,7 @@ import com.microchip.android.microchipusb.MicrochipUsb;
 import android.widget.Toast;
 import android.view.Gravity;
 
-
+import com.spectrometer.Spectrometer;
 /**
  * Main Activity class for the Motion Tracking API Sample. Handles the connection to the Tango
  * service and propagation of Tango pose data to OpenGL and Layout views. OpenGL rendering logic is
@@ -151,6 +151,10 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     protected static final int MCP2221_PID = 0xDD;
     /** Microchip Vendor ID. */
     protected static final int MCP2221_VID = 0x4D8;
+    /** Spectrometer Product ID. */
+    protected static final int SPEC_PID = 0x4200;
+    /** Spectrometer Vendor ID. */
+    protected static final int SPEC_VID = 0x2457;
     /** TAG to be used for logcat. */
    // protected static final String TAG = "MainActivity";
     /** Custom toast - displayed in the center of the screen. */
@@ -162,23 +166,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     /** public member to be used in the test project. */
     public Mcp2221Comm mcp2221Comm;
 
-    final byte[] getSpec = {
-            (byte) 0xC1, (byte) 0xC0, //start bytes
-            0x00, 0x10, // protocol version
-            0x00, 0x00, // flags
-            0x00, 0x00, // error number
-            0x00, 0x10, 0x10, 0x00, // message type
-            0x00, 0x00, 0x00, 0x00, // regarding (user-specified)
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
-            0x00, // checksum type
-            0x00, // immediate length
-            0x00, 0x00, 0x00, 0x00, // unused (immediate data)
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unused (remainder of immediate data)
-            0x14, 0x00, 0x00, 0x00,// bytes remaining
-            // optional payload
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // checksum
-            (byte) 0xC5, (byte) 0xC4, (byte) 0xC3, (byte) 0xC2 // footer
-    };
+    public Spectrometer spectrometer;
 
     private DataOutputStream tangoPoseOutput;
     private DataOutputStream tangoDepthOutput;
@@ -242,10 +230,6 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         }
 
 
-        setupSpectrometer();
-
-
-        //setupCameraCapture();
         sToast = Toast.makeText(this, "", Toast.LENGTH_SHORT);
         sToast.setGravity(Gravity.CENTER, 0, 0);
 
@@ -263,6 +247,8 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         Constants result = null;
 
         mcp2221 = new MCP2221(this);
+        spectrometer = new Spectrometer(this);
+
         result = MicrochipUsb.getConnectedDevice(this);
         if (result == Constants.MCP2221) {
             // try to open a connection
@@ -276,7 +262,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
                     setupMCP2221();
                     break;
                 case CONNECTION_FAILED:
-                    sToast.setText("Connection failed");
+                    sToast.setText("MCP2221 connection failed");
                     sToast.show();
                     break;
                 case NO_USB_PERMISSION:
@@ -286,6 +272,29 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
                     break;
             }
         }
+        // Let's try to open the spectrometer
+            result = spectrometer.open();
+
+            switch (result) {
+                case SUCCESS:
+                    Log.d("specto", "success");
+                    sToast.setText("Spectrometer connected");
+                    sToast.show();
+                    break;
+                case CONNECTION_FAILED:
+                    Log.d("specto", "failed");
+                    sToast.setText("Spectrometer connection failed");
+                    sToast.show();
+                    break;
+                case NO_USB_PERMISSION:
+                    Log.d("specto", "no permission");
+                    mcp2221.requestUsbPermission(mPermissionIntent);
+                    break;
+                default:
+                    Log.d("specto", "default");
+                    break;
+            }
+
 
         final Handler camHandler = new Handler();
         final byte b0 = 0;
@@ -293,243 +302,65 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         final int camDelay = 350; //milliseconds
         camHandler.postDelayed(new Runnable() {
             public void run() {
-                mcp2221Comm.setGpPinValue(b1, b0); // make sure focus is connected to ground
-                mcp2221Comm.setGpPinValue(b0, b0); // trigger the shutter
-                //startCapture();
-                try {
-                    tangoCamOutput.writeLong(System.currentTimeMillis());
-                    Log.d("cam", "photo taken");
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-                android.os.SystemClock.sleep(50); // wait a bit
-                mcp2221Comm.setGpPinValue(b0,b1); // bring the shutter back high
+                if (mcp2221Comm != null) {
+                    mcp2221Comm.setGpPinValue(b1, b0); // make sure focus is connected to ground
+                    mcp2221Comm.setGpPinValue(b0, b0); // trigger the shutter
+                    //startCapture();
+                    try {
+                        tangoCamOutput.writeLong(System.currentTimeMillis());
+                        Log.d("cam", "photo taken");
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                    android.os.SystemClock.sleep(50); // wait a bit
+                    mcp2221Comm.setGpPinValue(b0, b1); // bring the shutter back high
 
-                camHandler.postDelayed(this, camDelay);
+                    camHandler.postDelayed(this, camDelay);
+                }
             }
         }, camDelay);
 
+        final Handler specHandler = new Handler();
+        final int specDelay = 50; //milliseconds
+        final Random rand = new Random();
+
+        specHandler.postDelayed(new Runnable() {
+            public void run() {
+                try {
+                    //Log.d("specto", "spectro?");
+                    tangoSpectroOutput.writeLong(System.currentTimeMillis());
+                    byte[] spec =  spectrometer.captureSpectrum();
+                    tangoSpectroOutput.write(spec);
 
 
+                    Number[] intensities = new Number[1024];
+                    int numCount = 0;
+                    for (int i = 44; i <= 2091; i = i + 2) {
+                        intensities[numCount] = ByteBuffer.wrap(new byte[]{spec[i + 1], spec[i]}).getShort();
+                        numCount += 1;
+                    }
+                    if (rand.nextInt(5) == 0) {
+
+                        series1.setModel(Arrays.asList(intensities), SimpleXYSeries.ArrayFormat.Y_VALS_ONLY);
+
+                        plot.redraw();
+                    }
 
 
-    }
-
-    private void setupSpectrometer() {
-        manager = (UsbManager) getSystemService(Context.USB_SERVICE);
-		/*
-		 * this block required if you need to communicate to USB devices it's
-		 * take permission to device
-		 * if you want than you can set this to which device you want to communicate
-		 */
-        // ------------------------------------------------------------------
-        mPermissionIntent = PendingIntent.getBroadcast(this, 0, new Intent(
-                ACTION_USB_PERMISSION), 0);
-        IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
-        registerReceiver(mUsbReceiver, filter);
-        // -------------------------------------------------------------------
-        HashMap<String, UsbDevice> deviceList = manager.getDeviceList();
-        Iterator<UsbDevice> deviceIterator = deviceList.values().iterator();
-        while (deviceIterator.hasNext()) {
-            device = deviceIterator.next();
-            manager.requestPermission(device, mPermissionIntent);
-            Log.d("Device", " " + device.getDeviceId());
-            if (device.getProductId() == 0x4200) {
-                devInterface = device.getInterface(0);
-                Log.d("INTERFACE CLASS", "class: " + devInterface.getInterfaceClass());
-                // https://github.com/uvwxy/android-ambit/blob/57bf1f4642b01680b26c6c807283f93dd8386130/src/de/uvwxy/android/ambit/lib/AndroidAmbitDevice.java
-
-                UsbEndpoint ep0 = devInterface.getEndpoint(0);
-                UsbEndpoint ep1 = devInterface.getEndpoint(1);
-                if (ep0.getDirection() == UsbConstants.USB_DIR_IN) {
-                    epIn = ep0;
-                    epOut = ep1;
-
-                } else {
-                    epIn = ep1;
-                    epOut = ep0;
-
+                } catch (IOException e) {
+                    e.printStackTrace();
                 }
-                if (manager.hasPermission(device)) {
-                    devConnection = manager.openDevice(device);
-                    // Reset
-                    // Wait one second
-                    // Set integration time (10,000 uSec = 10ms)
-                    byte[] intTime = {
-                            (byte) 0xC1, (byte) 0xC0, //start bytes
-                            0x00, 0x10, // protocol version
-                            0x00, 0x00, // flags
-                            0x00, 0x00, // error number
-                            0x10, 0x00, 0x11, 0x00, // message type
-                            0x00, 0x00, 0x00, 0x00, // regarding (user-specified)
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
-                            0x00, // checksum type
-                            0x04, // immediate length
-                            0x10, 0x27, 0x00, 0x00, // integration time (immediate data)
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unused (remainder of immediate data)
-                            0x14, 0x00, 0x00, 0x00 ,// bytes remaining
-                            // optional payload
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // checksum
-                            (byte) 0xC5, (byte) 0xC4,(byte)  0xC3,(byte)  0xC2 // footer
-                    };
-                    Log.d("USB", "bytes transfered intTime " + devConnection.bulkTransfer(epOut, intTime, 64, 1000));
 
-                    // Set binning factor
-                    byte[] binFact = {
-                            (byte) 0xC1, (byte) 0xC0, //start bytes
-                            0x00, 0x10, // protocol version
-                            0x00, 0x00, // flags
-                            0x00, 0x00, // error number
-                            (byte) 0x90, 0x02, 0x11, 0x00, // message type
-                            0x00, 0x00, 0x00, 0x00, // regarding (user-specified)
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
-                            0x00, // checksum type
-                            0x01, // immediate length
-                            0x00, 0x00, 0x00, 0x00, // binning mode (0) was too lazy to move the next three bytes to next line (immediate data)
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // unused (remainder of immediate data)
-                            0x14, 0x00, 0x00, 0x00 ,// bytes remaining
-                            // optional payload
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // checksum
-                            (byte) 0xC5, (byte) 0xC4,(byte)  0xC3,(byte)  0xC2 // footer
-                    };
-                    Log.d("USB", "bytes transfered binning factor " + devConnection.bulkTransfer(epOut, binFact, 64, 1000));
-                    final Handler specHandler = new Handler();
-                    final int specDelay = 20; //milliseconds
 
-                    final Random rand = new Random();
-                    specHandler.postDelayed(new Runnable() {
-                        public void run() {
-                            // update spectrum UI occasionally
-                            captureSpectrum(rand.nextInt(10) == 0);
-                            specHandler.postDelayed(this, specDelay);
-                        }
-                    }, specDelay);
-                    break;
-                }
+                camHandler.postDelayed(this, specDelay);
             }
-        }
+        }, specDelay);
+
+
 
     }
 
-    private void captureSpectrum(boolean updateUI){
-        devConnection.bulkTransfer(epOut, getSpec, 64, 1000);
-        byte[] spec = new byte[2112];
-        //Log.d("USB", "bytes recieved " + devConnection.bulkTransfer(epIn, spec, 2112, 1000));
-        devConnection.bulkTransfer(epIn, spec, 2112, 1000);
-        // Attempt to plot them
-        try {
-            tangoSpectroOutput.writeLong(System.currentTimeMillis());
-            tangoSpectroOutput.write(spec);
-        } catch (IOException e) {
-        e.printStackTrace();
-    }
-        Number[] intensities = new Number[1024];
-        int numCount = 0;
-        for (int i = 44; i <= 2091; i = i + 2) {
-            intensities[numCount] = ByteBuffer.wrap(new byte[]{spec[i + 1], spec[i]}).getShort();
-            numCount += 1;
-        }
-        if (updateUI) {
-            Log.d("Plot", "plotted?");
 
-            series1.setModel(Arrays.asList(intensities), SimpleXYSeries.ArrayFormat.Y_VALS_ONLY);
-
-            plot.redraw();
-        }
-    }
-
-    private void startCapture(){
-        Log.d("USB", "starting capture");
-
-        byte[] setGPIO = {
-                0x50, // set GPIO output values
-                (byte)0xFF, // don't care
-                0x01, // Modify GP0 output
-                0x00, // Set GP0 to be 0
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                // GP1
-                0x00, // Don't modify output
-                0x00, // Set GP1 to be 0
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                // GP2
-                0x00, // Don't modify output
-                0x00, // Set GP0 to be 0 (shouldn't matter)
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                // GP3
-                0x00, // Don't modify output
-                0x00, // Set GP0 to be 0 (shouldn't matter)
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 18-27 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 28-37 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 38-47 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 48-57 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00// 6 bytes- Bytes 58-63 reserved
-        };
-
-        Log.d("USB", "start cap: bytes transfered intTime " + devConnectionCamera.bulkTransfer(epOutCamera, setGPIO, 64, 1000));
-        byte[] resp = new byte[64];
-        devConnectionCamera.bulkTransfer(epInCamera, resp, 64, 1000);
-        Log.d("USB", "RESP GPIO values 0 0 1 0? " + resp[2] + " " + resp[3] + " " + resp[4] + " " + resp[5]);
-
-        // capture time is System.currentTimeMillis() + some offset which we can calculate later?
-
-        try {
-            tangoCamOutput.writeLong(System.currentTimeMillis());
-            Log.d("cam", "photo taken");
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        byte[] getGPIOReq = new byte[64];
-        getGPIOReq[0] = 0x51;
-        Log.d("USB", "start cap: bytes transfered intTime " + devConnectionCamera.bulkTransfer(epOutCamera, getGPIOReq, 64, 1000));
-
-        byte[] getGPIO = new byte[64];
-        devConnectionCamera.bulkTransfer(epInCamera, getGPIO, 64, 1000);
-        Log.d("USB", "GPIO values 0 0 1 0? " + getGPIO[2] + " " + getGPIO[3] + " " + getGPIO[4] + " " + getGPIO[5]);
-    }
-    private void endCapture(){
-        Log.d("USB", "ending capture");
-        byte[] setGPIO = {
-                0x50, // set GPIO output values
-                0x00, // don't care
-                0x01, // Modify GP0 output
-                0x01, // Set GP0 to be 1
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                // GP1
-                0x00, // Don't modify output
-                0x00, // Set GP1 to be 0
-                0x01, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                // GP2
-                0x00, // Don't modify output
-                0x00, // Set GP0 to be 0 (shouldn't matter)
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                // GP3
-                0x00, // Don't modify output
-                0x00, // Set GP0 to be 0 (shouldn't matter)
-                0x00, // Don't change GPIO direction
-                0x00, // New GPIO pin direction (but should be ignored since previous bit is 0)
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 18-27 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 28-37 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 38-47 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,// 10 bytes- Bytes 48-57 reserved
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00// 6 bytes- Bytes 58-63 reserved
-        };
-        Log.d("USB", "end cap: bytes transfered intTime " + devConnectionCamera.bulkTransfer(epOutCamera, setGPIO, 64, 1000));
-        byte[] getGPIOReq = new byte[64];
-        getGPIOReq[0] = 0x51;
-        Log.d("USB", "start cap: bytes transfered intTime " + devConnectionCamera.bulkTransfer(epOutCamera, getGPIOReq, 64, 1000));
-
-        byte[] getGPIO = new byte[64];
-        devConnectionCamera.bulkTransfer(epInCamera, getGPIO, 64, 1000);
-        Log.d("USB", "GPIO values 0 1 1 0? " + getGPIO[2] + " " + getGPIO[3] + " " + getGPIO[4] + " " + getGPIO[5]);
-    }
 
     private final BroadcastReceiver mUsbReceiver = new BroadcastReceiver() {
         @Override
@@ -538,24 +369,36 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
             Log.d("USB", "onReceive");
             if (ACTION_USB_PERMISSION.equals(action)) {
                 synchronized (this) {
-                    final UsbDevice device =
-                            (UsbDevice) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    final UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
 
                     // is usb permission has been granted, try to open a connection
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         if (device != null) {
-                            // call method to set up device communication
-                            final Constants result = mcp2221.open();
+                            if (device.getVendorId() == mcp2221.MCP2221_VID) {
+                                // call method to set up device communication
+                                final Constants result = mcp2221.open();
 
-                            if (result != Constants.SUCCESS) {
-                                sToast.setText("Could not open MCP2221 connection");
-                                sToast.show();
-                            } else {
-                                mcp2221Comm = new Mcp2221Comm(mcp2221);
-                                sToast.setText("MCP2221 connection opened");
-                                sToast.show();
-                                setupMCP2221();
+                                if (result != Constants.SUCCESS) {
+                                    sToast.setText("Could not open MCP2221 connection");
+                                    sToast.show();
+                                } else {
+                                    mcp2221Comm = new Mcp2221Comm(mcp2221);
+                                    sToast.setText("MCP2221 connection opened");
+                                    sToast.show();
+                                    setupMCP2221();
 
+                                }
+                            } else if (device.getVendorId() == spectrometer.SPEC_VID){
+                                // call method to set up device communication
+                                final Constants result = spectrometer.open();
+
+                                if (result != Constants.SUCCESS) {
+                                    sToast.setText("Could not open Spectrometer connection");
+                                    sToast.show();
+                                } else {
+                                    sToast.setText("Spectrometer connection opened");
+                                    sToast.show();
+                                }
                             }
                         }
                     } else {
@@ -566,11 +409,20 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
             }
 
             if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
-                sToast.setText("Device Detached");
+                UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (device != null) {
+                    if (device.getVendorId() == mcp2221.MCP2221_VID) {
+                        mcp2221.close();
+                        sToast.setText("Camera Detached");
+
+                    } else if (device.getVendorId() == SPEC_VID) {
+                        spectrometer.close();
+                        sToast.setText("Spectrometer Detached");
+                    }
+                }
                 sToast.show();
                 // close the connection and
                 // release all resources
-                mcp2221.close();
                 // leave a bit of time for the COM thread to close
                 try {
                     Thread.sleep(20);
@@ -618,6 +470,27 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
                             default:
                                 break;
                         }
+                    } else if (device.getVendorId() == SPEC_VID && device.getProductId() == SPEC_PID) {
+                        final Constants result = spectrometer.open();
+
+                        switch (result) {
+                            case SUCCESS:
+                                sToast.setText("Spectrometer Connection Opened");
+                                sToast.show();
+                                Log.d("USB", "Connection opened");
+                                break;
+                            case CONNECTION_FAILED:
+                                sToast.setText("Spectrometer Connection Failed");
+                                sToast.show();
+                                Log.d("USB", "Connection failed");
+                                break;
+                            case NO_USB_PERMISSION:
+                                Log.d("USB", "no permission");
+                                spectrometer.requestUsbPermission(mPermissionIntent);
+                                break;
+                            default:
+                                break;
+                        }
                     }
                 }
             }
@@ -633,8 +506,6 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         conf.setGpPinValues(pinVals);
         mcp2221Comm.setSRamSettings(conf, false, false, false, false, false, false, true);
         Log.d("MCP2221", "values set");
-
-
     }
     /**
      * Sets Rajawalisurface view and its renderer. This is ideally called only once in onCreate.
@@ -905,7 +776,6 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     @Override
     public void onStop() {
         super.onStop();
-        devConnection.close();
-        devConnectionCamera.close();
+
     }
 }
